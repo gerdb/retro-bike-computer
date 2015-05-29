@@ -563,7 +563,7 @@ uint16_t tmp_period;
         INTCONbits.GIE = 1;
         
         if (tmp_period!=0 && speed_timeout != SPEED_TIMEOUT)
-            speed_raw = 937286L / tmp_period;
+            speed_raw = 2L*937286L / tmp_period;
         else
             speed_raw = 0;
 
