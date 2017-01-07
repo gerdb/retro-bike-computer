@@ -1,17 +1,17 @@
-_eeprom_read_word: CODE, 1912 0 30
-___aldiv: CODE, 1430 0 130
-_km_getThreshold: CODE, 1837 0 42
-__stringtab: STRING, 2006 0 1
+_eeprom_read_word: CODE, 1936 0 30
+___aldiv: CODE, 1448 0 130
+_km_getThreshold: CODE, 1861 0 42
+__stringtab: STRING, 2030 0 1
 _ISR: CODE, 4 0 120
-_eeprom_write_word: CODE, 1972 0 24
-_load_content: CODE, 1161 0 137
-_stepper_tab: STRING, 2007 0 6
-_main: CODE, 163 0 998
-__initialization: CODE, 126 0 34
-_NTC_ADC2Temperature: CODE, 1648 0 79
-___wmul: CODE, 1942 0 30
-_eeprom_read: CODE, 1879 0 33
-_Stepper_Step: CODE, 1298 0 132
-_eeprom_write: CODE, 1793 0 44
-_save_content: CODE, 1560 0 88
-Total: 1928
+_eeprom_write_word: CODE, 1996 0 24
+_load_content: CODE, 1173 0 143
+_stepper_tab: STRING, 2031 0 6
+_main: CODE, 175 0 998
+__initialization: CODE, 126 0 46
+_NTC_ADC2Temperature: CODE, 1672 0 79
+___wmul: CODE, 1966 0 30
+_eeprom_read: CODE, 1903 0 33
+_Stepper_Step: CODE, 1316 0 132
+_eeprom_write: CODE, 1817 0 44
+_save_content: CODE, 1578 0 94
+Total: 1952

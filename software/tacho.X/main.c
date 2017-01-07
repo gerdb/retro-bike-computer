@@ -61,7 +61,7 @@ uint16_t key_long_cnt = 0;
 uint8_t suppress_click = 0;
 
 
-#define OFFSET_STEPPER1 16
+#define OFFSET_STEPPER1 20 //16
 #define OFFSET_STEPPER2 75
 #define OFFSET_STEPPER3 32
 
@@ -96,14 +96,58 @@ uint16_t max_speed = 0;
 uint16_t period = 0;
 uint8_t tmr1_ov = 0;
 
+uint8_t startup_done = 0;
+uint16_t startup_volt_stable = 0;
+uint8_t req_save_content = 0;
+
 uint8_t speed_timeout = 0;
 #define SPEED_TIMEOUT 10
+//#define OUTLINE 2160 // Schwalbe Fat Frank 26"
+#define OUTLINE 2250 // Vee Rubber Speedster
+//#define DYNAMO_POLES 28 // Shimano
+#define DYNAMO_POLES 26 // Shutter Precision SD-8
 // km
+// Radumfang: 2160mm (Fat Frank 26")
+// 28pole Dynamo (Shimano): 1/2 Impuls pro 77,142857143 mm
+// 1 stepper pulse per 74,074074074m
+// 1 stepper pulse each 960/2 @2160mm & 28pol
+
+// Radumfang: 2250mm (Vee Rubber Speedster)
+// 26 pole Dynamo (Shutter Precision SD-8): 1/2 Impuls pro 86,538461538 mm
+// 1 stepper pulse per 74,074074074m
+// 1 stepper pulse each 856/2 @2250mm & 26pol
+
+
+#define KM_PRE_DIV ((74074 * DYNAMO_POLES / OUTLINE +1) / 2)
+
+
+// Shimano Dynamo & Fat Frank Tire
+// Period: 2500 @100Hz
 // Radumfang: 2160mm
 // 28pole Dynamo: 1 Impuls pro 77,142857143 mm
-// 1 stepper pulse per 74,074074074m
-// 1 stepper pulse each 960
-#define KM_PRE_DIV 960
+// 1Hz = 77,142857143mm/sec = 0,277714286 km/h
+// 100Hz = 27.7714286km/h
+// 20km/h = 270 steps
+// 27.7714286km/h = 374,914285714 steps
+// 374,9.. * 2500 = 937285,714285714
+// *2 wegen 1 Pulse pro 2 pol Dynamo
+
+// Shutter Precision SD-8 Dynamo & Vee Rubber Speedster
+// Period: 2500 @100Hz
+// Radumfang: 2250mm
+// 26pole Dynamo: 1 Impuls pro 86,538461538 mm
+// 1Hz = 86,538461538mm/sec = 0,311538461537 km/h
+// 100Hz = 31.1538461537km/h
+// 20km/h = 270 steps
+// 1km/h = 13.5 steps
+// 31.1538461537km/h = 420,576923075 steps
+// 420,5.... * 2500 = 1051442,307687375
+// *2 wegen 1 Pulse pro 2 pol Dynamo = 2102884,61537475
+
+#define SPEED_CONST (OUTLINE * 24300L / DYNAMO_POLES )
+
+
+volatile uint32_t test = SPEED_CONST;
 uint16_t total_km_prelog = 0;
 uint16_t total_km = 0;
 uint16_t trip_km = 0;
@@ -131,10 +175,12 @@ int16_t NTC_table[33] = {
   540, 540, 540, 540, 540, 540, 540, 540
 };
 
-//ADC = Volt / 27,83203125
-#define UNDERVOLTAGE 107 // 3V
-#define VOLTAGE_OK   180 // 5V
-#define VOLTAGE_STARTUP   180 // 5V
+// Voltage divider: 47k & 10k = 5.7:1
+// Vref = 5V -> 28.5V = 1024
+//ADC = Volt(mV) / 27,83203125
+#define UNDERVOLTAGE 144 // 4.0V
+#define VOLTAGE_OK   180 // 5.0V
+#define VOLTAGE_STARTUP   180 // 5.0V
 uint8_t voltage_ok_cnt = 0;
 uint8_t voltage_ok = 0;
 uint16_t savecnt = 0;
@@ -298,6 +344,8 @@ void save_content(void) {
     eeprom_write_word(EEADR_MAXS_1,max_speed);
 }
 
+
+
 /*
  * 
  */
@@ -338,290 +386,308 @@ uint16_t tmp_period;
     //Turn on ADC module
     ADCON0bits.ADON = 1;
 
-    // Initialize the modules
-
-    do {
-        ADCON0bits.GO_nDONE = 1;
-        __delay_ms(1);
-        while(ADCON0bits.GO_nDONE == 1);
-    }while ((ADRES>>6) < VOLTAGE_STARTUP);
-
-
-    for (i=0; i< 560; i++) {
-        Stepper_Step(1,0);
-        Stepper_Step(2,0);
-        Stepper_Step(3,0);
-        __delay_ms(1);
-    }
-    for (; i< 560; i++) {
-        Stepper_Step(1,0);
-        Stepper_Step(3,0);
-        __delay_ms(1);
-    }
-    for (; i< 810; i++) {
-        Stepper_Step(3,0);
-        __delay_ms(1);
-    }
-
-    load_content();
-
     while (1) {
+        //Select ADC input channel Pin 3
+        ADCON0bits.CHS = 3;
+        // Initialize the modules
+        startup_done = 0;
+        startup_volt_stable = 0;
+        i = 0;
+        do {
+            ADCON0bits.GO_nDONE = 1;
+            __delay_ms(1);
+            while(ADCON0bits.GO_nDONE == 1);
+            voltage = ADRES>>6;
 
-        if ((stepperSetPoint1+OFFSET_STEPPER1) > stepperPos1) {
-            stepperPos1 ++;
-            Stepper_Step(1,1);
-        } else if ((stepperSetPoint1+OFFSET_STEPPER1) < stepperPos1) {
-            stepperPos1 --;
-            Stepper_Step(1,0);
-        }
-
-        if ((stepperSetPoint2+OFFSET_STEPPER2) > stepperPos2) {
-            stepperPos2 ++;
-            Stepper_Step(2,1);
-        } else if ((stepperSetPoint2+OFFSET_STEPPER2) < stepperPos2) {
-            stepperPos2 --;
-            Stepper_Step(2,0);
-        }
-
-        if ((stepperSetPoint3+OFFSET_STEPPER3) > stepperPos3) {
-            stepperPos3 ++;
-            Stepper_Step(3,1);
-        } else if ((stepperSetPoint3+OFFSET_STEPPER3) < stepperPos3) {
-            stepperPos3 --;
-            Stepper_Step(3,0);
-        }
-
-
-        adc_mux ++;
-        if (adc_mux >= ADC_CNT) {
-            adc_mux = ADC_VOLTAGE;
-        }
-
-        switch (adc_mux) {
-            case ADC_VOLTAGE:
-                ADCON0bits.CHS = 3;
-                break;
-            case ADC_TEMP:
-                ADCON0bits.CHS = 2;
-                break;
-        }
-
-        __delay_ms(1);
-        
-        //Start conversion by setting the GO/DONE bit.
-        ADCON0bits.GO_nDONE = 1;
-
-        __delay_ms(1);
-
-
-        while(ADCON0bits.GO_nDONE == 1);
-
-        switch (adc_mux) {
-            case ADC_VOLTAGE:
-                /* Divider: 10k/47k
-                 * Ref: 5V
-                 * ADC = 1024 * Volt * 10k/57k / 5V
-                 * ADC = Volt / 27,83203125
-                 */
-                voltage = ADRES>>6;
-                if (voltage > VOLTAGE_OK) {
-                    if (voltage_ok_cnt < 255)
-                        voltage_ok_cnt ++;
-                    else {
-                        voltage_ok = 1;
-                        if (savecnt < 65535)
-                            savecnt ++;
+            if (voltage < UNDERVOLTAGE) {
+                startup_volt_stable = 0;
+                i = 0;
+            }
+            if (voltage > VOLTAGE_STARTUP) {
+                if (startup_volt_stable < 2000) {
+                    startup_volt_stable ++;
+                } else {
+                    i++;
+                                // Reference run
+                    if (i < 560) {
+                        Stepper_Step(1,0);
+                        Stepper_Step(2,0);
                     }
-                } else if (voltage < UNDERVOLTAGE) {
-                        voltage_ok_cnt = 0;
-                        voltage_ok = 0;
-                        if (savecnt > 2500) // 25000 = 10sec
-                            save_content();
-                        savecnt = 0;
-                }
+                    if (i < 810) {
+                        Stepper_Step(3,0);
+                    }
 
-                break;
-            case ADC_TEMP:
-                temperature_cnt ++;
-                if (temperature_cnt > 1000) {
-                    temperature_cnt = 0;
-                    temperature = NTC_ADC2Temperature(ADRES >> 6);
-                }
+                    if (i > 1000) {
+                        startup_done = 1;
+                        stepperPos1 = 0;
+                        stepperPos2 = 0;
+                        stepperPos3 = 0;
+                    }
 
-                break;
-        }
-
-
-        /*
-         * Stopwatch.
-         * 180 deg = 40min = 2400 sec
-         * 1/3 deg = 1 step = 4.444.. sec = 40/9
-         *
-         * Tick period = 1000000 / 65536 = 15,258789063Hz
-         */
-        if (tick) {
-            tick = 0;
-            stopwatch_prescaler ++;
-            if (stopwatch_prescaler >= 68) {// 4.4444 * 15,258789063Hz = 67,81684028
-                stopwatch_prescaler = 0;
-                stopwatch ++ ;
-                if (stopwatch >= 810) // 3*270deg
-                    stopwatch -= 810;
-            }
-        }
-        
-        stepperSetPoint3 = stopwatch;
-
-        // Count the tacho pulses
-        pulse = PORTCbits.RC2;
-        // Edge detected
-        if (pulse & !old_pulse) {
-            // Count the total trip exponentiel
-            total_km_pre ++;
-            if (total_km_pre >= KM_PRE_DIV) {
-                total_km_pre = 0;
-
-                total_km_prelog ++;
-
-                if (total_km_prelog >= km_getThreshold(total_km) ) {
-                    total_km_prelog = 0;
-                    total_km ++;
                 }
             }
 
-            // Count the daily trip
-            trip_km_pre ++;
-            if (trip_km_pre >= KM_PRE_DIV) {
-                trip_km_pre = 0;
-                if (trip_km< 540)
-                    trip_km ++;
+        } while (!startup_done);
+
+        load_content();
+
+        do{
+
+            if ((stepperSetPoint1+OFFSET_STEPPER1) > stepperPos1) {
+                stepperPos1 ++;
+                Stepper_Step(1,1);
+            } else if ((stepperSetPoint1+OFFSET_STEPPER1) < stepperPos1) {
+                stepperPos1 --;
+                Stepper_Step(1,0);
             }
-        }
-        old_pulse = pulse;
+
+            if ((stepperSetPoint2+OFFSET_STEPPER2) > stepperPos2) {
+                stepperPos2 ++;
+                Stepper_Step(2,1);
+            } else if ((stepperSetPoint2+OFFSET_STEPPER2) < stepperPos2) {
+                stepperPos2 --;
+                Stepper_Step(2,0);
+            }
+
+            if ((stepperSetPoint3+OFFSET_STEPPER3) > stepperPos3) {
+                stepperPos3 ++;
+                Stepper_Step(3,1);
+            } else if ((stepperSetPoint3+OFFSET_STEPPER3) < stepperPos3) {
+                stepperPos3 --;
+                Stepper_Step(3,0);
+            }
+
+
+            adc_mux ++;
+            if (adc_mux >= ADC_CNT) {
+                adc_mux = ADC_VOLTAGE;
+            }
+
+            switch (adc_mux) {
+                case ADC_VOLTAGE:
+                    ADCON0bits.CHS = 3;
+                    break;
+                case ADC_TEMP:
+                    ADCON0bits.CHS = 2;
+                    break;
+            }
+
+            __delay_ms(1);
+
+            //Start conversion by setting the GO/DONE bit.
+            ADCON0bits.GO_nDONE = 1;
+
+            __delay_ms(1);
+
+
+            while(ADCON0bits.GO_nDONE == 1);
+
+            switch (adc_mux) {
+                case ADC_VOLTAGE:
+                    /* Divider: 10k/47k
+                     * Ref: 5V
+                     * ADC = 1024 * Volt * 10k/57k / 5V
+                     * ADC = Volt / 27,83203125
+                     */
+                    voltage = ADRES>>6;
+                    if (voltage > VOLTAGE_OK) {
+                        if (voltage_ok_cnt < 255)
+                            voltage_ok_cnt ++;
+                        else {
+                            voltage_ok = 1;
+                            if (savecnt < 65535)
+                                savecnt ++;
+                        }
+                    } else if (voltage < UNDERVOLTAGE) {
+                            voltage_ok_cnt = 0;
+                            voltage_ok = 0;
+                            if (savecnt > 2500){ // 25000 = 10sec
+                                req_save_content = 1;
+                            }
+                            savecnt = 0;
+                            startup_done = 0;
+                    }
+
+                    break;
+                case ADC_TEMP:
+                    temperature_cnt ++;
+                    if (temperature_cnt > 1000) {
+                        temperature_cnt = 0;
+                        temperature = NTC_ADC2Temperature(ADRES >> 6);
+                    }
+
+                    break;
+            }
+
+
+            /*
+             * Stopwatch.
+             * 180 deg = 40min = 2400 sec
+             * 1/3 deg = 1 step = 4.444.. sec = 40/9
+             *
+             * Tick period = 1000000 / 65536 = 15,258789063Hz
+             */
+            if (tick) {
+                tick = 0;
+                stopwatch_prescaler ++;
+                if (stopwatch_prescaler >= 68) {// 4.4444 * 15,258789063Hz = 67,81684028
+                    stopwatch_prescaler = 0;
+                    stopwatch ++ ;
+                    if (stopwatch >= 810) // 3*270deg
+                        stopwatch -= 810;
+                }
+            }
+
+            stepperSetPoint3 = stopwatch;
+
+            // Count the tacho pulses
+            pulse = PORTCbits.RC2;
+            // Edge detected
+            if (pulse & !old_pulse) {
+                // Count the total trip exponentiel
+                total_km_pre ++;
+                if (total_km_pre >= KM_PRE_DIV) {
+                    total_km_pre = 0;
+
+                    total_km_prelog ++;
+
+                    if (total_km_prelog >= km_getThreshold(total_km) ) {
+                        total_km_prelog = 0;
+                        total_km ++;
+                    }
+                }
+
+                // Count the daily trip
+                trip_km_pre ++;
+                if (trip_km_pre >= KM_PRE_DIV) {
+                    trip_km_pre = 0;
+                    if (trip_km< 540)
+                        trip_km ++;
+                }
+            }
+            old_pulse = pulse;
 
 
 
-        if (!PORTCbits.RC3) {
-            if (debounce_key_cnt < 50) {
-                debounce_key_cnt ++;
+            if (!PORTCbits.RC3) {
+                if (debounce_key_cnt < 50) {
+                    debounce_key_cnt ++;
+                } else {
+                    if (!debounced_key) {
+                        debounced_key = 1;
+                    }
+                }
             } else {
-                if (!debounced_key) {
-                    debounced_key = 1;
+                if (debounce_key_cnt > 0) {
+                    debounce_key_cnt --;
+                } else {
+                    if (debounced_key) {
+                        debounced_key = 0;
+                        if (!suppress_click)
+                            debounced_key_click = 1;
+                        suppress_click = 0;
+                    }
+
+
                 }
             }
-        } else {
-            if (debounce_key_cnt > 0) {
-                debounce_key_cnt --;
-            } else {
-                if (debounced_key) {
-                    debounced_key = 0;
-                    if (!suppress_click)
-                        debounced_key_click = 1;
-                    suppress_click = 0;
+
+            // Reset trip and stopwatch
+            if (debounced_key) {
+                if (key_long_cnt < 1000) {
+                    key_long_cnt ++;
+                } else {
+                    trip_km_pre = 0;
+                    trip_km = 0;
+                    stopwatch_prescaler = 0;
+                    stopwatch = 0;
+                    max_speed = 0;
+                    suppress_click = 1;
                 }
-
-
-            }
-        }
-
-        // Reset trip and stopwatch
-        if (debounced_key) {
-            if (key_long_cnt < 1000) {
-                key_long_cnt ++;
             } else {
-                trip_km_pre = 0;
-                trip_km = 0;
-                stopwatch_prescaler = 0;
-                stopwatch = 0;
-                max_speed = 0;
-                suppress_click = 1;
+                key_long_cnt = 0;
             }
-        } else {
-            key_long_cnt = 0;
-        }
 
 
-        if (debounced_key_click) {
-            debounced_key_click = 0;
-            if (mode != MODE_TEMP)
-                mode --;
-            else
-                mode = MODE_KMH;
-        }
-
-        // Period: 2500 @100Hz
-        // Radumfang: 2160mm
-        // 28pole Dynamo: 1 Impuls pro 77,142857143 mm
-        // 1Hz = 77,142857143mm/sec = 0,277714286 km/h
-        // 100Hz = 27.7714286km/h
-        // 20km/h = 270 steps
-        // 27.7714286km/h = 374,914285714 steps
-        // 374,9.. * 2500 = 937285,714285714
-
-        INTCONbits.GIE = 0;
-        tmp_period = period;
-        INTCONbits.GIE = 1;
-        
-        if (tmp_period!=0 && speed_timeout != SPEED_TIMEOUT)
-            speed_raw = 2L*937286L / tmp_period;
-        else
-            speed_raw = 0;
-
-        if (speed_raw > speed_rawFilt)
-            speed_rawFilt++;
-        else if (speed_raw < speed_rawFilt)
-            speed_rawFilt--;
-
-
-        speed_filtL += speed_rawFilt;
-        speed_filtL -= speed;
-        speed = speed_filtL / 256;
-
-        //speed = speed_rawFilt;
-
-
-        if (speed > 540)
-            speed = 540;
-
-        if (speed > max_speed)
-            max_speed = speed;
-
-
-        switch (mode) {
-            case MODE_TEMP:
-                stepperSetPoint2 = 0;
-                if (temperature >= 0)
-                    stepperSetPoint1 = temperature;
+            if (debounced_key_click) {
+                debounced_key_click = 0;
+                if (mode != MODE_TEMP)
+                    mode --;
                 else
-                    stepperSetPoint1 = temperature + 540;
-                break;
-            case MODE_MAX:
-                stepperSetPoint2 = 80;
-                stepperSetPoint1 = max_speed;
-                break;
-            case MODE_TRIP:
-                stepperSetPoint2 = 220;
-                stepperSetPoint1 = trip_km;
-                break;
-            case MODE_TOTAL:
-                stepperSetPoint2 = 340;
-                stepperSetPoint1 = total_km;
-                break;
-            case MODE_KMH:
-                stepperSetPoint2 = 430;
-                stepperSetPoint1 = speed;
-                break;                
-        }
+                    mode = MODE_KMH;
+            }
+
+            INTCONbits.GIE = 0;
+            tmp_period = period;
+            INTCONbits.GIE = 1;
+
+            if (tmp_period!=0 && speed_timeout != SPEED_TIMEOUT)
+                speed_raw = SPEED_CONST / tmp_period;
+            else
+                speed_raw = 0;
+
+            if (speed_raw > speed_rawFilt)
+                speed_rawFilt++;
+            else if (speed_raw < speed_rawFilt)
+                speed_rawFilt--;
 
 
-        if (toggle) {
-            toggle = 0;
-            PORTAbits.RA0 = 0;
-        } else {
-            toggle = 1;
-            PORTAbits.RA0 = 1;
+            speed_filtL += speed_rawFilt;
+            speed_filtL -= speed;
+            speed = speed_filtL / 256;
+
+            //speed = speed_rawFilt;
+
+
+            if (speed > 540)
+                speed = 540;
+
+            if (speed > max_speed)
+                max_speed = speed;
+
+
+            switch (mode) {
+                case MODE_TEMP:
+                    stepperSetPoint2 = 0;
+                    if (temperature >= 0)
+                        stepperSetPoint1 = temperature;
+                    else
+                        stepperSetPoint1 = temperature + 540;
+                    break;
+                case MODE_MAX:
+                    stepperSetPoint2 = 80;
+                    stepperSetPoint1 = max_speed;
+                    break;
+                case MODE_TRIP:
+                    stepperSetPoint2 = 220;
+                    stepperSetPoint1 = trip_km;
+                    break;
+                case MODE_TOTAL:
+                    stepperSetPoint2 = 340;
+                    stepperSetPoint1 = total_km;
+                    break;
+                case MODE_KMH:
+                    stepperSetPoint2 = 430;
+                    stepperSetPoint1 = speed;
+                    break;
+            }
+
+
+            if (toggle) {
+                toggle = 0;
+                PORTAbits.RA0 = 0;
+            } else {
+                toggle = 1;
+                PORTAbits.RA0 = 1;
+            }
+        } while (startup_done);
+
+        if (req_save_content) {
+            save_content();
         }
+        req_save_content = 0;
     }
+
 }
 
 void interrupt ISR() {
